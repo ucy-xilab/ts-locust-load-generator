@@ -13,6 +13,7 @@ import locust
 import numpy as np
 from locust import events
 from locust import task, constant, HttpUser
+from locust import LoadTestShape
 from locust.env import Environment
 from requests.adapters import HTTPAdapter
 from test_data import USER_CREDETIALS, TRIP_DATA, TRAVEL_DATES
@@ -20,7 +21,6 @@ from test_data import USER_CREDETIALS, TRIP_DATA, TRAVEL_DATES
 VERBOSE_LOGGING = 0  # ${LOCUST_VERBOSE_LOGGING}
 # stat_file = open("output/requests_stats_u50_5.csv", "w")
 state_data = []
-
 
 def random_string_generator():
     len = randint(8, 16)
@@ -64,8 +64,8 @@ class Requests:
         self.trip_detail = random.choice(TRIP_DATA)
         self.food_detail = {}
         self.departure_date = random.choice(TRAVEL_DATES)
-        # self.user_name = "fdse_microservice"
-        # self.password = "111111"
+        self.user_name = "fdse_microservice"
+        self.password = "111111"
 
         if VERBOSE_LOGGING == 1:
             logger = logging.getLogger("Debugging logger")
@@ -741,6 +741,47 @@ class UserCollectTicket(HttpUser):
         requests = Requests(self.client)
         for task in task_sequence:
             requests.perform_task(task)
+
+"""
+class MyCustomShape(LoadTestShape):
+    time_limit = 600
+    spawn_rate = 20
+
+    def tick(self):
+        run_time = self.get_run_time()
+
+        if run_time < self.time_limit:
+            # User count rounded to nearest hundred.
+            user_count = round(run_time, -2)
+            return (user_count, self.spawn_rate)
+
+        return None
+"""
+
+class StagesShapeWithCustomUsers(LoadTestShape):
+
+    stages = [
+        {"duration": 10, "users": 10, "spawn_rate": 10, "user_classes": [UserBooking]},
+        {"duration": 30, "users": 50, "spawn_rate": 10, "user_classes": [UserBooking, UserPay]},
+        {"duration": 60, "users": 100, "spawn_rate": 10, "user_classes": [UserPay]},
+        {"duration": 120, "users": 80, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
+        {"duration": 180, "users": 90, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
+        {"duration": 240, "users": 70, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
+        {"duration": 300, "users": 20, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
+        ]
+
+    def tick(self):
+        run_time = self.get_run_time()
+
+        for stage in self.stages:
+            if run_time < stage["duration"]:
+                try:
+                    tick_data = (stage["users"], stage["spawn_rate"], stage["user_classes"])
+                except:
+                    tick_data = (stage["users"], stage["spawn_rate"])
+                return tick_data
+
+        return None
 
 
 """
