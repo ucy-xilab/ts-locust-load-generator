@@ -12,7 +12,7 @@ from random import randint
 import locust
 import numpy as np
 from locust import events
-from locust import task, constant, HttpUser
+from locust import task, constant, HttpUser, User, TaskSet
 from locust import LoadTestShape
 from locust.env import Environment
 from requests.adapters import HTTPAdapter
@@ -50,6 +50,46 @@ def postfix(expected=True):
         return '_expected'
     return '_unexpected'
 
+def execute_load():
+    _conn = create_conn(conn_string)
+    rs = _conn.execute(query)
+    return rs
+
+class LoadDataset(User):
+    print("got here first")
+    wait_time = constant(0)
+
+    @task(10)
+    def create_users(self):
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
+        req_label = sys._getframe().f_code.co_name + postfix(expected)
+        start_time = time.time()
+        document_num = random.randint(1, 5)  # added by me
+        for user in USER_CREDETIALS:
+            print("Adding user " + user)
+            self.user_name = user
+            self.password = user
+            with self.client.post(url="/api/v1/adminuserservice/users",
+                                headers={
+                                    "Authorization": self.bearer, "Accept": "application/json",
+                                    "Content-Type": "application/json"},
+                                json={"documentNum": document_num, "documentType": 0, "email": "string", "gender": 0,
+                                        "password": self.user_name, "userName": self.user_name},
+                                name=req_label) as response2:
+                to_log = {'name': req_label, 'expected': expected, 'status_code': response2.status_code,
+                        'response_time': time.time() - start_time,
+                        'response': self.try_to_read_response_as_json(response2)}
+                self.log_verbose(to_log)
+
+    @task(5)
+    def create_routes(self):
+        pass
+
+    @task(1)
+    def create_dates(self):
+        pass
+
 
 class Requests:
 
@@ -82,10 +122,18 @@ class Requests:
     def home(self, expected):
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
-        with self.client.get('/index.html', name=req_label) as response:
-            to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
+        with self.client.get('/index.html', name=req_label, catch_response=True) as response:
+            if response.elapsed.total_seconds() > 0.001:
+                #print("Home load fail response: " + str(response.elapsed.total_seconds()))
+                response.failure("Time out on loading. Dropped query.")
+                to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
                       'response_time': time.time() - start_time}
-            self.log_verbose(to_log)
+                self.log_verbose(to_log)
+            else:
+                #print("Home load response: " + str(response.elapsed.total_seconds()))
+                to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
+                      'response_time': time.time() - start_time}
+                self.log_verbose(to_log)
 
     def try_to_read_response_as_json(self, response):
         try:
@@ -116,7 +164,8 @@ class Requests:
             headers=head,
             json=body_start,
             name=req_label)
-        if not response.json()["data"]:
+        #print (response.json())
+        if not response.json() or not response.json()["data"]:
             response = self.client.post(
                 url="/api/v1/travel2service/trips/left",
                 headers=head,
@@ -171,16 +220,25 @@ class Requests:
         head = {"Accept": "application/json",
                 "Content-Type": "application/json"}
         if (expected):
-            response = self.client.post(url="/api/v1/users/login",
+            with self.client.post(url="/api/v1/users/login",
                                         headers=head,
                                         json={
                                             "username": self.user_name,
                                             "password": self.password
-                                        }, name=req_label)
-            to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
-                      'response_time': time.time() - start_time,
-                      'response': self.try_to_read_response_as_json(response)}
-            self.log_verbose(to_log)
+                                        }, name=req_label, catch_response=True) as response:
+                if response.elapsed.total_seconds() > 1.0:
+                    #print("Login fail response: " + str(response.elapsed.total_seconds()))
+                    response.failure("Time out on loading. Dropped query.")
+                    to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
+                        'response_time': time.time() - start_time}
+                    self.log_verbose(to_log)
+                    return
+                else:
+                    #print("Login response: " + str(response.elapsed.total_seconds()))
+                    to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
+                            'response_time': time.time() - start_time,
+                            'response': self.try_to_read_response_as_json(response)}
+                    self.log_verbose(to_log)
         else:
             response = self.client.post(url="/api/v1/users/login",
                                         headers=head,
@@ -761,13 +819,14 @@ class MyCustomShape(LoadTestShape):
 class StagesShapeWithCustomUsers(LoadTestShape):
 
     stages = [
-        {"duration": 10, "users": 10, "spawn_rate": 10, "user_classes": [UserBooking]},
-        {"duration": 30, "users": 50, "spawn_rate": 10, "user_classes": [UserBooking, UserPay]},
-        {"duration": 60, "users": 100, "spawn_rate": 10, "user_classes": [UserPay]},
-        {"duration": 120, "users": 80, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
-        {"duration": 180, "users": 90, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
-        {"duration": 240, "users": 70, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
-        {"duration": 300, "users": 20, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
+        {"duration": 10, "users": 10, "spawn_rate": 10, "user_classes": [UserNoLogin]},
+        {"duration": 10, "users": 10, "spawn_rate": 10, "user_classes": [UserOnlyLogin]},
+        {"duration": 10, "users": 50, "spawn_rate": 10, "user_classes": [UserBooking, UserPay]},
+        {"duration": 10, "users": 100, "spawn_rate": 10, "user_classes": [UserPay]},
+        {"duration": 10, "users": 80, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
+        {"duration": 10, "users": 90, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
+        {"duration": 10, "users": 70, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
+        {"duration": 10, "users": 20, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
         ]
 
     def tick(self):
