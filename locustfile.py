@@ -12,6 +12,7 @@ from random import randint
 import locust
 import numpy as np
 from locust import events
+from locust.runners import MasterRunner
 from locust import task, constant, HttpUser, User, TaskSet
 from locust import LoadTestShape
 from locust.env import Environment
@@ -21,10 +22,17 @@ from test_data import USER_CREDETIALS, TRIP_DATA, TRAVEL_DATES
 VERBOSE_LOGGING = 0  # ${LOCUST_VERBOSE_LOGGING}
 # stat_file = open("output/requests_stats_u50_5.csv", "w")
 state_data = []
+user_count = 0
+stage_duration = 0
+stage_duration_passed = 0
+stage_users = 0
+stage_rate = 0
+
+max_experiment_duration = 86400 #in seconds. This is to guarantee users will spawn only once during the test duration
 
 def random_string_generator():
-    len = randint(8, 16)
-    prob = randint(0, 100)
+    len = random.randint(8, 16)
+    prob = random.randint(0, 100)
     if prob < 25:
         random_string = ''.join([random.choice(string.ascii_letters) for n in range(len)])
     elif prob < 50:
@@ -38,10 +46,10 @@ def random_string_generator():
 
 
 def random_date_generator():
-    temp = randint(0, 4)
-    random_y = 2000 + temp * 10 + randint(0, 9)
-    random_m = randint(1, 12)
-    random_d = randint(1, 31)  # assumendo che la data possa essere non sensata (e.g. 30 Febbraio)
+    temp = random.randint(0, 4)
+    random_y = 2000 + temp * 10 + random.randint(0, 9)
+    random_m = random.randint(1, 12)
+    random_d = random.randint(1, 31)  # assumendo che la data possa essere non sensata (e.g. 30 Febbraio)
     return str(random_y) + '-' + str(random_m) + '-' + str(random_d)
 
 
@@ -106,7 +114,10 @@ class Requests:
         self.departure_date = random.choice(TRAVEL_DATES)
         self.user_name = "fdse_microservice"
         self.password = "111111"
-
+        self.bearer = ""
+        self.user_id = 0
+        self.contactid = 0
+        
         if VERBOSE_LOGGING == 1:
             logger = logging.getLogger("Debugging logger")
             logger.setLevel(logging.DEBUG)
@@ -123,7 +134,7 @@ class Requests:
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
         with self.client.get('/index.html', name=req_label, catch_response=True) as response:
-            if response.elapsed.total_seconds() > 0.001:
+            if response.elapsed.total_seconds() > 0.01:
                 #print("Home load fail response: " + str(response.elapsed.total_seconds()))
                 response.failure("Time out on loading. Dropped query.")
                 to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
@@ -159,22 +170,23 @@ class Requests:
         }
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
-        response = self.client.post(
+        with self.client.post(
             url="/api/v1/travelservice/trips/left",
             headers=head,
+            catch_response=True,
             json=body_start,
-            name=req_label)
-        #print (response.json())
-        if not response.json() or not response.json()["data"]:
-            response = self.client.post(
-                url="/api/v1/travel2service/trips/left",
-                headers=head,
-                json=body_start,
-                name=req_label)
-        to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
-                  'response_time': time.time() - start_time,
-                  'response': self.try_to_read_response_as_json(response)}
-        self.log_verbose(to_log)
+            name=req_label) as response:
+            #print (response.json())
+            if not response.json() or not response.json()["data"]:
+                response = self.client.post(
+                    url="/api/v1/travel2service/trips/left",
+                    headers=head,
+                    json=body_start,
+                    name=req_label)
+            to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
+                    'response_time': time.time() - start_time,
+                    'response': self.try_to_read_response_as_json(response)}
+            self.log_verbose(to_log)
 
     # def search_departure(self, expected):
     #     logging.info("search_departure")
@@ -226,9 +238,9 @@ class Requests:
                                             "username": self.user_name,
                                             "password": self.password
                                         }, name=req_label, catch_response=True) as response:
-                if response.elapsed.total_seconds() > 1.0:
+                if response.elapsed.total_seconds() > 6.0:
                     #print("Login fail response: " + str(response.elapsed.total_seconds()))
-                    response.failure("Time out on loading. Dropped query.")
+                    response.failure("Time out on login. Dropped query.")
                     to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
                         'response_time': time.time() - start_time}
                     self.log_verbose(to_log)
@@ -325,31 +337,41 @@ class Requests:
                 "Content-Type": "application/json", "Authorization": self.bearer}
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
-        response_contacts = self.client.get(
-            url="/api/v1/contactservice/contacts/account/" + self.user_id,
+        with self.client.get(
+            url="/api/v1/contactservice/contacts/account/" + str(self.user_id),
             headers=head,
-            name=req_label)
-        to_log = {'name': req_label, 'expected': expected, 'status_code': response_contacts.status_code,
-                  'response_time': time.time() - start_time,
-                  'response': self.try_to_read_response_as_json(response_contacts)}
-        self.log_verbose(to_log)
+            catch_response=True,
+            name=req_label) as response_contacts:
+            response_as_json_contacts = response_contacts.json()
+            if not response_as_json_contacts or not "data" in response_as_json_contacts:
+                response_contacts.failure("Error getting contact details")
+                to_log = {'name': req_label, 'expected': expected, 'status_code': response_contacts.status_code,
+                    'response_time': time.time() - start_time,
+                    'response': self.try_to_read_response_as_json(response_contacts)}
+                self.log_verbose(to_log)
+                return
 
-        response_as_json_contacts = response_contacts.json()["data"]
+            to_log = {'name': req_label, 'expected': expected, 'status_code': response_contacts.status_code,
+                    'response_time': time.time() - start_time,
+                    'response': self.try_to_read_response_as_json(response_contacts)}
+            self.log_verbose(to_log)
 
-        if len(response_as_json_contacts) == 0:
-            req_label = 'set_new_contact' + postfix(expected)
-            response_contacts = self.client.post(
-                url="/api/v1/contactservice/contacts",
-                headers=head,
-                json={
-                    "name": self.user_id, "accountId": self.user_id, "documentType": "1",
-                    "documentNumber": self.user_id, "phoneNumber": "123456"},
-                name=req_label)
+            response_as_json_contacts = response_as_json_contacts["data"]
 
-            response_as_json_contacts = response_contacts.json()["data"]
-            self.contactid = response_as_json_contacts["id"]
-        else:
-            self.contactid = response_as_json_contacts[0]["id"]
+            if len(response_as_json_contacts) == 0:
+                req_label = 'set_new_contact' + postfix(expected)
+                response_contacts = self.client.post(
+                    url="/api/v1/contactservice/contacts",
+                    headers=head,
+                    json={
+                        "name": self.user_id, "accountId": self.user_id, "documentType": "1",
+                        "documentNumber": self.user_id, "phoneNumber": "123456"},
+                    name=req_label)
+
+                response_as_json_contacts = response_contacts.json()["data"]
+                self.contactid = response_as_json_contacts["id"]
+            else:
+                self.contactid = response_as_json_contacts[0]["id"]
 
     def finish_booking(self, expected):
         departure_date = self.departure_date
@@ -481,7 +503,7 @@ class Requests:
         start_time = time.time()
         if (expected):
             with self.client.get(
-                    url="/api/v1/cancelservice/cancel/" + self.order_id + "/" + self.user_id,
+                    url="/api/v1/cancelservice/cancel/" + str(self.order_id) + "/" + str(self.user_id),
                     headers=head,
                     name=req_label) as response:
                 to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
@@ -625,90 +647,59 @@ class Requests:
         task = getattr(self, name_without_suffix)
         task(name.endswith('_expected'))
 
+class Profiles:
 
-class UserOnlyLogin(HttpUser):
-    weight = 1
-    # wait_function = random.expovariate(1) * 1000
-    wait_time = constant(0)
+    def callProfile(userprofile):
+        task_sequence = []
+        if (userprofile == 1):
+            task_sequence = Profiles.login()
+        if (userprofile == 2):
+            task_sequence = Profiles.search_ticket()
+        if (userprofile == 3):
+            task_sequence = Profiles.booking()
+        if (userprofile == 4):
+            task_sequence = Profiles.cosign()
+        if (userprofile == 5):
+            task_sequence = Profiles.payment()
+        if (userprofile == 6):
+            task_sequence = Profiles.cancel()
+        if (userprofile == 7):
+            task_sequence = Profiles.collect()
+        return task_sequence
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
-        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
 
-    @task()
-    def perform_task(self):
+    def login():
+        task_sequence = []
         logging.debug("User home -> login")
-        request = Requests(self.client)
-        number = np.random.uniform()
+        number = random.randint(1, 100)/100
         if number < 0.98:
-            tasks_sequence = ["login_expected"]
+            task_sequence = ["login_expected"]
         else:
-            tasks_sequence = ["login_unexpected"]
-        for tasks in tasks_sequence:
-            request.perform_task(tasks)
+            task_sequence = ["login_unexpected"]
+        return task_sequence
 
-
-class UserNoLogin(HttpUser):
-    weight = 1
-    wait_time = constant(0)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.client.mount('https://', HTTPAdapter(pool_maxsize=50))
-        self.client.mount('http://', HTTPAdapter(pool_maxsize=50))
-
-    @task
-    def perfom_task(self):
+    def search_ticket():
+        task_sequence = []
         logging.debug("Running user 'only search'...")
-
         task_sequence = ["home_expected", "search_ticket_expected"]
-
-        requests = Requests(self.client)
-        for task in task_sequence:
-            requests.perform_task(task)
-
-
-class UserBooking(HttpUser):
-    weight = 1
-    # wait_function = random.expovariate(1)
-    wait_time = constant(0)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.client.mount('https://', HTTPAdapter(pool_maxsize=50))
-        self.client.mount('http://', HTTPAdapter(pool_maxsize=50))
-
-    @task
-    def perform_task(self):
+        return task_sequence
+    
+    def booking():
+        task_sequence = []
         logging.debug("Running user 'booking'...")
 
         task_sequence = ["home_expected",
-                         "login_expected",
-                         "search_ticket_expected",
-                         "start_booking_expected",
-                         "get_assurance_types_expected",
-                         "get_foods_expected",
-                         "select_contact_expected",
-                         "finish_booking_expected"]
-        # task_sequence = ["login_expected", "select_contact_expected", "finish_booking_expected"]
+                        "login_expected",
+                        "search_ticket_expected",
+                        "start_booking_expected",
+                        "get_assurance_types_expected",
+                        "get_foods_expected",
+                        "select_contact_expected",
+                        "finish_booking_expected"]
+        return task_sequence
 
-        requests = Requests(self.client)
-        for task in task_sequence:
-            requests.perform_task(task)
-
-
-class UserConsignTicket(HttpUser):
-    weight = 1
-    wait_time = constant(0)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.client.mount('https://', HTTPAdapter(pool_maxsize=50))
-        self.client.mount('http://', HTTPAdapter(pool_maxsize=50))
-
-    @task
-    def perform_task(self):
+    def cosign():
+        task_sequence = []
         logging.debug("Running user 'consign ticket'...")
         task_sequence = [
             "home_expected",
@@ -719,75 +710,33 @@ class UserConsignTicket(HttpUser):
             "get_consigns_expected",
             "confirm_consign_expected",
         ]
+        return task_sequence
 
-        requests = Requests(self.client)
-        for task in task_sequence:
-            requests.perform_task(task)
-
-
-class UserPay(HttpUser):
-    weight = 1
-    wait_time = constant(0)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.client.mount('https://', HTTPAdapter(pool_maxsize=50))
-        self.client.mount('http://', HTTPAdapter(pool_maxsize=50))
-
-    @task
-    def perform_task(self):
-        logging.debug("Running user 'booking'...")
-
+    def payment():
+        task_sequence = []
+        logging.debug("Running user 'booking with payment'...")
         task_sequence = ["home_expected",
-                         "login_expected",
-                         "select_contact_expected",
-                         "finish_booking_expected",
-                         "select_order_expected",
-                         "pay_expected"]
+                        "login_expected",
+                        "select_contact_expected",
+                        "finish_booking_expected",
+                        "select_order_expected",
+                        "pay_expected"]
+        return task_sequence
 
-        requests = Requests(self.client)
-        for task in task_sequence:
-            requests.perform_task(task)
-
-
-class UserCancelNoRefund(HttpUser):
-    weight = 0
-    wait_time = constant(0)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.client.mount('https://', HTTPAdapter(pool_maxsize=50))
-        self.client.mount('http://', HTTPAdapter(pool_maxsize=50))
-
-    @task
-    def perform_task(self):
+    def cancel():
+        task_sequence = []
         logging.debug("Running user 'cancel no refund'...")
-
         task_sequence = [
             "home_expected",
             "login_expected",
             "select_order_expected",
             "cancel_with_no_refund_expected",
         ]
+        return task_sequence
 
-        requests = Requests(self.client)
-        for task in task_sequence:
-            requests.perform_task(task)
-
-
-class UserCollectTicket(HttpUser):
-    weight = 1
-    wait_time = constant(0)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.client.mount('https://', HTTPAdapter(pool_maxsize=50))
-        self.client.mount('http://', HTTPAdapter(pool_maxsize=50))
-
-    @task
-    def perform_task(self):
+    def collect():
+        task_sequence = []
         logging.debug("Running user 'collect ticket'...")
-
         task_sequence = [
             "home_expected",
             "login_expected",
@@ -795,45 +744,118 @@ class UserCollectTicket(HttpUser):
             "pay_expected",
             "collect_ticket_expected",
         ]
+        return task_sequence
+        
+class UserActionSet1(HttpUser):
+    global max_experiment_duration
+    weight = 1
+    #Long wait time so each user will execute only one task and then wait idle to the end
+    wait_time = constant(max_experiment_duration)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
 
-        requests = Requests(self.client)
-        for task in task_sequence:
-            requests.perform_task(task)
+    @task()
+    def perform_task(self):
+        bearer = 0
+        global user_count
+        global stage_duration
+        global stage_duration_passed
+        global stage_users
+        global stage_rate
+        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        user_count += 1
+        userprofile = random.randint(2, 2)
+        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        time.sleep(sleep_time)
+        task_sequence = Profiles.callProfile(userprofile)
+        request = Requests(self.client)
+        for tasks in task_sequence:
+            request.perform_task(tasks)
 
-"""
-class MyCustomShape(LoadTestShape):
-    time_limit = 600
-    spawn_rate = 20
+class UserActionSet2(HttpUser):
+    global max_experiment_duration
+    weight = 1
+    #Long wait time so each user will execute only one task and then wait idle to the end
+    wait_time = constant(max_experiment_duration)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
 
-    def tick(self):
-        run_time = self.get_run_time()
+    @task()
+    def perform_task(self):
+        global user_count
+        global stage_duration
+        global stage_duration_passed
+        global stage_users
+        global stage_rate
+        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        user_count += 1
+        userprofile = random.randint(3, 7)
+        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        time.sleep(sleep_time)
+        task_sequence = Profiles.callProfile(userprofile)
+        request = Requests(self.client)
+        for tasks in task_sequence:
+            request.perform_task(tasks)
 
-        if run_time < self.time_limit:
-            # User count rounded to nearest hundred.
-            user_count = round(run_time, -2)
-            return (user_count, self.spawn_rate)
+# Class that does nothing to allow users to slow down and complete the work
+class UserSlowdown(HttpUser):
+    weight = 1
+    #wait_function = random.expovariate(1) * 100
+    wait_time = constant(0)
 
-        return None
-"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
+
+    @task()
+    def perform_task(self):
+        pass
 
 class StagesShapeWithCustomUsers(LoadTestShape):
 
+    #stages = [
+    #    {"duration": 20, "users": 10, "spawn_rate": 100, "user_classes": [UserActionSet1]},
+    #    {"duration": 40, "users": 50, "spawn_rate": 50, "user_classes": [UserActionSet1]},
+    #    {"duration": 60, "users": 50, "spawn_rate": 50, "user_classes": [UserActionSet1]},
+    #    {"duration": 90, "users": 100, "spawn_rate": 100, "user_classes": [UserActionSet1]},
+    #    {"duration": 120, "users": 80, "spawn_rate": 80, "user_classes": [UserActionSet1]},
+    #    {"duration": 140, "users": 90, "spawn_rate": 90, "user_classes": [UserActionSet1]},
+    #    {"duration": 160, "users": 70, "spawn_rate": 70, "user_classes": [UserActionSet1]},
+    #    {"duration": 180, "users": 20, "spawn_rate": 20, "user_classes": [UserActionSet1]},
+    #    ]
+
     stages = [
-        {"duration": 10, "users": 10, "spawn_rate": 10, "user_classes": [UserNoLogin]},
-        {"duration": 10, "users": 10, "spawn_rate": 10, "user_classes": [UserOnlyLogin]},
-        {"duration": 10, "users": 50, "spawn_rate": 10, "user_classes": [UserBooking, UserPay]},
-        {"duration": 10, "users": 100, "spawn_rate": 10, "user_classes": [UserPay]},
-        {"duration": 10, "users": 80, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
-        {"duration": 10, "users": 90, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
-        {"duration": 10, "users": 70, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
-        {"duration": 10, "users": 20, "spawn_rate": 10, "user_classes": [UserBooking,UserPay]},
-        ]
+        {"duration": 10, "users": 50, "spawn_rate": 50, "user_classes": [UserActionSet1]},
+        {"duration": 30, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet2]},]
 
+    #stages = [{"duration": 10, "users": 10, "spawn_rate": 10}]
     def tick(self):
+        global stage_duration
+        global stage_duration_passed
+        global stage_users
+        global stage_rate
+        global max_experiment_duration
         run_time = self.get_run_time()
-
+        print("Tick: " + str(run_time))
         for stage in self.stages:
             if run_time < stage["duration"]:
+                if (max_experiment_duration < run_time):
+                    print("ERROR!!! Experiment exceeded max duration time ("+str(max_experiment_duration)+" seconds)")
+                    return None
+                if (stage_duration != stage["duration"]):
+                    stage_duration_passed = stage_duration
+                    print ("Updating stage duration")
+                stage_duration = stage["duration"]
+                stage_users = stage["users"]
+                stage_rate = stage["spawn_rate"]
+                print("Stage duration: " + str(stage_duration))
                 try:
                     tick_data = (stage["users"], stage["spawn_rate"], stage["user_classes"])
                 except:
@@ -874,3 +896,15 @@ def write_statistics(environment, **kwargs):
         csv_writer = csv.writer(f)
         for row in state_data:
             csv_writer.writerow(row)
+
+@events.test_start.add_listener
+def on_test_start(environment, **kwargs):
+    global user_count
+    # deterministic profile selection
+    print("Setting seed number")
+    random.seed(123)
+    user_count = 0
+    if not isinstance(environment.runner, MasterRunner):
+        print("Beginning test setup")
+    else:
+        print("Started test from Master node")
