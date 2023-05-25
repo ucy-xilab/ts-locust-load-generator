@@ -900,10 +900,12 @@ def write_statistics(environment, **kwargs):
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
     global user_count
+    global stage_duration_passed
     # deterministic profile selection
     print("Setting seed number")
     random.seed(123)
     user_count = 0
+    stage_duration_passed = 0
     if not isinstance(environment.runner, MasterRunner):
         print("Beginning test setup")
     else:
