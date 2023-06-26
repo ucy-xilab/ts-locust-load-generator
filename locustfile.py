@@ -9,6 +9,9 @@ import time
 from datetime import datetime
 from random import randint
 
+import uuid
+import logging
+
 import locust
 import numpy as np
 from locust import events
@@ -19,16 +22,63 @@ from locust.env import Environment
 from requests.adapters import HTTPAdapter
 from test_data import USER_CREDETIALS, TRIP_DATA, TRAVEL_DATES
 
+locust.stats.PERCENTILES_TO_REPORT = [0.25, 0.50, 0.75, 0.80, 0.90, 0.95, 0.98, 0.99, 0.999, 0.9999, 1.0]
 VERBOSE_LOGGING = 0  # ${LOCUST_VERBOSE_LOGGING}
 # stat_file = open("output/requests_stats_u50_5.csv", "w")
+LOG_STATISTICS_IN_HALF_MINUTE_CHUNKS = False
+RETRY_ON_ERROR = True
+MAX_RETRIES = 100
+
 state_data = []
 user_count = 0
 stage_duration = 0
 stage_duration_passed = 0
 stage_users = 0
 stage_rate = 0
+adminToken = 0;
+userList = [];
 
 max_experiment_duration = 86400 #in seconds. This is to guarantee users will spawn only once during the test duration
+
+STATUS_BOOKED = 0
+STATUS_PAID = 1
+STATUS_COLLECTED = 2
+STATUS_CANCELLED = 4
+STATUS_EXECUTED = 6
+
+spawning_complete = False
+@events.spawning_complete.add_listener
+def on_spawning_complete(user_count, **kwargs):
+    global spawning_complete
+    spawning_complete = True
+    
+def get_json_from_response(response):
+    response_as_text = response.content.decode('UTF-8')
+    response_as_json = json.loads(response_as_text)
+    return response_as_json
+
+def try_until_success(f,retries=MAX_RETRIES):
+    for attempt in range(retries):   
+        logging.debug(f"Calling function {f.__name__}, attempt {attempt}...")
+        
+        try:
+            result, status = f()
+            result_as_string = str(result)
+            logging.debug(f"Result of calling function {f.__name__} was: {result_as_string}.")
+            if status == 1:                
+                return result
+            else:
+                logging.debug(f"Failed calling function {f.__name__}, response was {result_as_string}, trying again:")
+                time.sleep(1)
+        except Exception as e:
+            exception_as_text = str(e)
+            logging.debug(f"Failed calling function {f.__name__}, exception was: {exception_as_text}, trying again.")
+            time.sleep(1)
+
+        if not RETRY_ON_ERROR:
+            break
+        
+    raise Exception("Weird... Cannot call endpoint.") 
 
 def random_string_generator():
     len = random.randint(8, 16)
@@ -58,46 +108,29 @@ def postfix(expected=True):
         return '_expected'
     return '_unexpected'
 
+def next_weekday(d, weekday):
+    days_ahead = weekday - d.weekday()
+    if days_ahead <= 0: # Target day already happened this week
+        days_ahead += 7
+    return d + timedelta(days_ahead)
+
+def get_name_suffix(name):
+    global spawning_complete
+    if not spawning_complete:
+        name = name + "_spawning"
+
+    if LOG_STATISTICS_IN_HALF_MINUTE_CHUNKS:
+        now = datetime.now()
+        now = datetime(now.year, now.month, now.day, now.hour, now.minute, 0 if now.second < 30 else 30, 0)
+        now_as_timestamp = int(now.timestamp())
+        return f"{name}@{now_as_timestamp}"
+    else:
+        return name
+
 def execute_load():
     _conn = create_conn(conn_string)
     rs = _conn.execute(query)
     return rs
-
-class LoadDataset(User):
-    print("got here first")
-    wait_time = constant(0)
-
-    @task(10)
-    def create_users(self):
-        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
-        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
-        req_label = sys._getframe().f_code.co_name + postfix(expected)
-        start_time = time.time()
-        document_num = random.randint(1, 5)  # added by me
-        for user in USER_CREDETIALS:
-            print("Adding user " + user)
-            self.user_name = user
-            self.password = user
-            with self.client.post(url="/api/v1/adminuserservice/users",
-                                headers={
-                                    "Authorization": self.bearer, "Accept": "application/json",
-                                    "Content-Type": "application/json"},
-                                json={"documentNum": document_num, "documentType": 0, "email": "string", "gender": 0,
-                                        "password": self.user_name, "userName": self.user_name},
-                                name=req_label) as response2:
-                to_log = {'name': req_label, 'expected': expected, 'status_code': response2.status_code,
-                        'response_time': time.time() - start_time,
-                        'response': self.try_to_read_response_as_json(response2)}
-                self.log_verbose(to_log)
-
-    @task(5)
-    def create_routes(self):
-        pass
-
-    @task(1)
-    def create_dates(self):
-        pass
-
 
 class Requests:
 
@@ -224,13 +257,118 @@ class Requests:
                       'response_time': time.time() - start_time}
             self.log_verbose(to_log)
 
+    def loginAdmin(self, expected):
+        global adminToken
+        req_label = sys._getframe().f_code.co_name + postfix(expected)
+        start_time = time.time()
+
+        def api_call_admin_login():
+            headers = {"Accept": "application/json", "Content-Type": "application/json"}
+            body = {"username": "admin", "password": "222222"}
+            response = self.client.post(url="/api/v1/users/login", headers=headers, json=body, name=get_name_suffix("admin_login"))
+            response_as_json = get_json_from_response(response)
+            return response_as_json, response_as_json["status"]
+
+        print("Login as admin")
+        response_as_json = try_until_success(api_call_admin_login)
+        data = response_as_json["data"]
+        adminToken = data["token"]
+
+    def loginCreateUser(self, expected):
+        global adminToken
+        req_label = sys._getframe().f_code.co_name + postfix(expected)
+        user_name = str(uuid.uuid4())
+        password = "12345678"
+        start_time = time.time()
+
+        def api_call_admin_create_user():
+            headers = {"Authorization": f"Bearer {adminToken}", "Accept": "application/json", "Content-Type": "application/json"}
+            body = {"documentNum": None, "documentType": 0, "email": "string", "gender": 0, "password": password, "userName": user_name}
+            response = self.client.post(url="/api/v1/adminuserservice/users", headers=headers, json=body, name=get_name_suffix("admin_create_user"))
+            response_as_json = get_json_from_response(response)
+            return response_as_json, response_as_json["status"]
+            
+        print("Creating user "+user_name)
+        response_as_json = try_until_success(api_call_admin_create_user)
+        if response_as_json is not None:
+            userList.append(user_name)
+        
+    def adminGetUsers(self, expected):
+        global adminToken
+        req_label = sys._getframe().f_code.co_name + postfix(expected)
+        start_time = time.time()
+
+        def api_call_admin_get_users():
+            headers = {"Authorization": f"Bearer {adminToken}", "Accept": "application/json", "Content-Type": "application/json"}
+            response = self.client.get(url="/api/v1/adminuserservice/users", headers=headers, name=get_name_suffix("admin_get_users"))
+            response_as_json = get_json_from_response(response)
+            #print(response_as_json)
+            return response_as_json, response_as_json["status"]
+            
+        print("Get all users...")
+        response_as_json = try_until_success(api_call_admin_get_users)
+        #print(response_as_json)
+        if response_as_json is not None:
+            print(response_as_json['data'])
+            for userRecord in response_as_json['data']:
+                userList.append(userRecord['userId'])
+            print(userList)
+
     def login(self, expected):
+        req_label = sys._getframe().f_code.co_name + postfix(expected)
+        user_name = random.choice(userList)
+        password = "12345678"
+        start_time = time.time()
+
+        def api_call_login():
+            headers = {"Accept": "application/json", "Content-Type": "application/json"}
+            body = {"username": user_name, "password": password}
+            response = self.client.post(url="/api/v1/users/login", headers=headers, json=body, name=get_name_suffix("login"))
+            response_as_json = get_json_from_response(response)
+            return response_as_json, response_as_json["status"]
+
+        print("Loggin as user "+user_name)
+        if (expected):
+            response_as_json = try_until_success(api_call_login)
+        else:
+            password = "0000000" #Wrong password. Do not retry login, MAX_RETRIES override to 1.
+            response_as_json = try_until_success(api_call_login,1)
+            
+        data = response_as_json["data"]
+        user_id = data["userId"]
+        token = data["token"]
+        to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
+                'response_time': time.time() - start_time,
+                'response': self.try_to_read_response_as_json(data)}
+        self.log_verbose(to_log)
+        
+        if token is not None:
+            self.bearer = "Bearer " + token
+            self.user_id = user_name
+            print("Login success " + user_name + " with token: " + str(token))
+        else:
+            print("Login failed " + user_name + " with error: " + data)
+            
+        #def api_call_create_contact_for_user():
+        #    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"}
+        #    body = {"name": user_name, "accountId": user_id, "documentType": "1", "documentNumber": "123456", "phoneNumber": "123456"}
+        #    response = self.client.post(url="/api/v1/contactservice/contacts", headers=headers, json=body, name=get_name_suffix("admin_create_contact"))
+        #    return response_as_json, response_as_json["status"]
+
+        #try_until_success(api_call_create_contact_for_user)
+
+
+        return user_id, token
+
+    def loginOld(self, expected):
         # self._create_user(True)
         # self._navigate_to_client_login()
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
         head = {"Accept": "application/json",
                 "Content-Type": "application/json"}
+        response_as_json = None
+
         if (expected):
             with self.client.post(url="/api/v1/users/login",
                                         headers=head,
@@ -238,7 +376,7 @@ class Requests:
                                             "username": self.user_name,
                                             "password": self.password
                                         }, name=req_label, catch_response=True) as response:
-                if response.elapsed.total_seconds() > 6.0:
+                if response.elapsed.total_seconds() > 26.0:
                     #print("Login fail response: " + str(response.elapsed.total_seconds()))
                     response.failure("Time out on login. Dropped query.")
                     to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
@@ -251,6 +389,7 @@ class Requests:
                             'response_time': time.time() - start_time,
                             'response': self.try_to_read_response_as_json(response)}
                     self.log_verbose(to_log)
+                    response_as_json = response.json()["data"]
         else:
             response = self.client.post(url="/api/v1/users/login",
                                         headers=head,
@@ -263,12 +402,13 @@ class Requests:
                       'response_time': time.time() - start_time,
                       'response': self.try_to_read_response_as_json(response)}
             self.log_verbose(to_log)
+            response_as_json = response.json()["data"]
 
-        response_as_json = response.json()["data"]
         if response_as_json is not None:
             token = response_as_json["token"]
             self.bearer = "Bearer " + token
             self.user_id = response_as_json["userId"]
+            print("Login success with token: " + str(token))
 
     # purchase ticket
 
@@ -665,8 +805,32 @@ class Profiles:
             task_sequence = Profiles.cancel()
         if (userprofile == 7):
             task_sequence = Profiles.collect()
+        if (userprofile == 8):
+            task_sequence = Profiles.adminlogin()
+        if (userprofile == 9):
+            task_sequence = Profiles.createusers()
+        if (userprofile == 10):
+            task_sequence = Profiles.getusers()
         return task_sequence
 
+
+    def adminlogin():
+        task_sequence = []
+        logging.debug("Admin home -> login")
+        task_sequence = ["loginAdmin"]
+        return task_sequence
+
+    def createusers():
+        task_sequence = []
+        logging.debug("Admin home -> create user")
+        task_sequence = ["loginCreateUser"]
+        return task_sequence
+
+    def getusers():
+        task_sequence = []
+        logging.debug("Admin home -> create user")
+        task_sequence = ["loginAdmin","adminGetUsers"]
+        return task_sequence
 
     def login():
         task_sequence = []
@@ -803,6 +967,118 @@ class UserActionSet2(HttpUser):
         for tasks in task_sequence:
             request.perform_task(tasks)
 
+class UserActionSet3(HttpUser):
+    global max_experiment_duration
+    weight = 1
+    #Long wait time so each user will execute only one task and then wait idle to the end
+    wait_time = constant(max_experiment_duration)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
+
+    @task()
+    def perform_task(self):
+        global user_count
+        global stage_duration
+        global stage_duration_passed
+        global stage_users
+        global stage_rate
+        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        user_count += 1
+        userprofile = random.randint(1, 1)
+        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        time.sleep(sleep_time)
+        task_sequence = Profiles.callProfile(userprofile)
+        request = Requests(self.client)
+        for tasks in task_sequence:
+            request.perform_task(tasks)
+
+class UserActionSet4(HttpUser):
+    global max_experiment_duration
+    weight = 1
+    #Long wait time so each user will execute only one task and then wait idle to the end
+    wait_time = constant(max_experiment_duration)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
+
+    @task()
+    def perform_task(self):
+        global user_count
+        global stage_duration
+        global stage_duration_passed
+        global stage_users
+        global stage_rate
+        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        user_count += 1
+        userprofile = random.randint(8, 8)
+        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        time.sleep(sleep_time)
+        task_sequence = Profiles.callProfile(userprofile)
+        request = Requests(self.client)
+        for tasks in task_sequence:
+            request.perform_task(tasks)
+
+class UserActionSet5(HttpUser):
+    global max_experiment_duration
+    weight = 1
+    #Long wait time so each user will execute only one task and then wait idle to the end
+    wait_time = constant(max_experiment_duration)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
+
+    @task()
+    def perform_task(self):
+        global user_count
+        global stage_duration
+        global stage_duration_passed
+        global stage_users
+        global stage_rate
+        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        user_count += 1
+        userprofile = random.randint(9, 9)
+        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        time.sleep(sleep_time)
+        task_sequence = Profiles.callProfile(userprofile)
+        request = Requests(self.client)
+        for tasks in task_sequence:
+            request.perform_task(tasks)
+
+class UserActionSet6(HttpUser):
+    global max_experiment_duration
+    weight = 1
+    #Long wait time so each user will execute only one task and then wait idle to the end
+    wait_time = constant(max_experiment_duration)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
+
+    @task()
+    def perform_task(self):
+        global user_count
+        global stage_duration
+        global stage_duration_passed
+        global stage_users
+        global stage_rate
+        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        user_count += 1
+        userprofile = random.randint(10, 10)
+        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        time.sleep(sleep_time)
+        task_sequence = Profiles.callProfile(userprofile)
+        request = Requests(self.client)
+        for tasks in task_sequence:
+            request.perform_task(tasks)
+
 # Class that does nothing to allow users to slow down and complete the work
 class UserSlowdown(HttpUser):
     weight = 1
@@ -835,7 +1111,16 @@ class StagesShapeWithCustomUsers(LoadTestShape):
         {"duration": 10, "users": 50, "spawn_rate": 50, "user_classes": [UserActionSet1]},
         {"duration": 30, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet2]},]
 
+    #stages = [{"duration": 100, "users": 10000, "spawn_rate": 10000, "user_classes": [UserActionSet3]}]
     #stages = [{"duration": 10, "users": 10, "spawn_rate": 10}]
+    stages = [
+        {"duration": 10, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet4]},
+        {"duration": 1000, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet5]},
+        {"duration": 1500, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet1]},]
+    stages = [
+        {"duration": 5, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet6]},
+        {"duration": 1000, "users": 1000, "spawn_rate": 1000, "user_classes": [UserActionSet3]},]
+
     def tick(self):
         global stage_duration
         global stage_duration_passed
