@@ -27,7 +27,7 @@ VERBOSE_LOGGING = 0  # ${LOCUST_VERBOSE_LOGGING}
 # stat_file = open("output/requests_stats_u50_5.csv", "w")
 LOG_STATISTICS_IN_HALF_MINUTE_CHUNKS = False
 RETRY_ON_ERROR = True
-MAX_RETRIES = 100
+MAX_RETRIES = 2
 
 state_data = []
 user_count = 0
@@ -167,7 +167,7 @@ class Requests:
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
         with self.client.get('/index.html', name=req_label, catch_response=True) as response:
-            if response.elapsed.total_seconds() > 0.01:
+            if response.elapsed.total_seconds() > 0.1:
                 #print("Home load fail response: " + str(response.elapsed.total_seconds()))
                 response.failure("Time out on loading. Dropped query.")
                 to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
@@ -184,9 +184,9 @@ class Requests:
             return response.json()
         except:
             try:
-                return response.content.decode('utf-8')
+                return response.data.decode('utf-8')
             except:
-                return response.content
+                return response.data
 
     def search_ticket(self, expected):
         logging.debug("search ticket")
@@ -309,10 +309,10 @@ class Requests:
         response_as_json = try_until_success(api_call_admin_get_users)
         #print(response_as_json)
         if response_as_json is not None:
-            print(response_as_json['data'])
+            #print(response_as_json['data'])
             for userRecord in response_as_json['data']:
-                userList.append(userRecord['userId'])
-            print(userList)
+                userList.append(userRecord['userName'])
+            #print(userList)
 
     def login(self, expected):
         req_label = sys._getframe().f_code.co_name + postfix(expected)
@@ -325,29 +325,32 @@ class Requests:
             body = {"username": user_name, "password": password}
             response = self.client.post(url="/api/v1/users/login", headers=headers, json=body, name=get_name_suffix("login"))
             response_as_json = get_json_from_response(response)
+            #print(response_as_json)
             return response_as_json, response_as_json["status"]
 
-        print("Loggin as user "+user_name)
+        #print("Loggin as user "+user_name)
         if (expected):
+            #print("Password: "+str(password))
             response_as_json = try_until_success(api_call_login)
         else:
             password = "0000000" #Wrong password. Do not retry login, MAX_RETRIES override to 1.
+            #print("Password: "+str(password))
             response_as_json = try_until_success(api_call_login,1)
             
         data = response_as_json["data"]
         user_id = data["userId"]
         token = data["token"]
-        to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
+        to_log = {'name': req_label, 'expected': expected, 'status_code': response_as_json["status"],
                 'response_time': time.time() - start_time,
-                'response': self.try_to_read_response_as_json(data)}
+                'response': data}
         self.log_verbose(to_log)
         
         if token is not None:
             self.bearer = "Bearer " + token
             self.user_id = user_name
-            print("Login success " + user_name + " with token: " + str(token))
-        else:
-            print("Login failed " + user_name + " with error: " + data)
+            #print("Login success " + user_name + " with token: " + str(token))
+        #else:
+            #print("Login failed " + user_name + " with error: " + data)
             
         #def api_call_create_contact_for_user():
         #    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json"}
@@ -357,8 +360,7 @@ class Requests:
 
         #try_until_success(api_call_create_contact_for_user)
 
-
-        return user_id, token
+        #return user_id, token
 
     def loginOld(self, expected):
         # self._create_user(True)
@@ -792,13 +794,13 @@ class Profiles:
     def callProfile(userprofile):
         task_sequence = []
         if (userprofile == 1):
-            task_sequence = Profiles.login()
+            task_sequence = Profiles.cosign()
         if (userprofile == 2):
             task_sequence = Profiles.search_ticket()
         if (userprofile == 3):
             task_sequence = Profiles.booking()
         if (userprofile == 4):
-            task_sequence = Profiles.cosign()
+            task_sequence = Profiles.login()
         if (userprofile == 5):
             task_sequence = Profiles.payment()
         if (userprofile == 6):
@@ -959,12 +961,13 @@ class UserActionSet2(HttpUser):
         global stage_rate
         sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
         user_count += 1
-        userprofile = random.randint(3, 7)
+        userprofile = random.randint(2, 7)
         print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
         time.sleep(sleep_time)
         task_sequence = Profiles.callProfile(userprofile)
         request = Requests(self.client)
         for tasks in task_sequence:
+            print("User "+str(user_count)+" with profile "+str(userprofile)+" executing task "+str(tasks))
             request.perform_task(tasks)
 
 class UserActionSet3(HttpUser):
@@ -1118,8 +1121,8 @@ class StagesShapeWithCustomUsers(LoadTestShape):
         {"duration": 1000, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet5]},
         {"duration": 1500, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet1]},]
     stages = [
-        {"duration": 5, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet6]},
-        {"duration": 1000, "users": 1000, "spawn_rate": 1000, "user_classes": [UserActionSet3]},]
+        {"duration": 2, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet6]},
+        {"duration": 1000, "users": 10000, "spawn_rate": 100, "user_classes": [UserActionSet2]},]
 
     def tick(self):
         global stage_duration
