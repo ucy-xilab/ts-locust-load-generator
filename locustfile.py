@@ -37,6 +37,7 @@ stage_users = 0
 stage_rate = 0
 adminToken = 0;
 userList = [];
+usersToCreate = 500;
 
 max_experiment_duration = 86400 #in seconds. This is to guarantee users will spawn only once during the test duration
 
@@ -276,10 +277,8 @@ class Requests:
 
     def loginCreateUser(self, expected):
         global adminToken
+        global usersToCreate
         req_label = sys._getframe().f_code.co_name + postfix(expected)
-        user_name = str(uuid.uuid4())
-        password = "12345678"
-        start_time = time.time()
 
         def api_call_admin_create_user():
             headers = {"Authorization": f"Bearer {adminToken}", "Accept": "application/json", "Content-Type": "application/json"}
@@ -287,11 +286,15 @@ class Requests:
             response = self.client.post(url="/api/v1/adminuserservice/users", headers=headers, json=body, name=get_name_suffix("admin_create_user"))
             response_as_json = get_json_from_response(response)
             return response_as_json, response_as_json["status"]
-            
-        print("Creating user "+user_name)
-        response_as_json = try_until_success(api_call_admin_create_user)
-        if response_as_json is not None:
-            userList.append(user_name)
+
+        for i in range(0,usersToCreate):
+            user_name = str(uuid.uuid4())
+            password = "12345678"
+            start_time = time.time()
+            print(i+". Creating user "+user_name)
+            response_as_json = try_until_success(api_call_admin_create_user)
+            if response_as_json is not None:
+                userList.append(user_name)
         
     def adminGetUsers(self, expected):
         global adminToken
@@ -791,41 +794,17 @@ class Requests:
 
 class Profiles:
 
-    def callProfile(userprofile):
-        task_sequence = []
-        if (userprofile == 1):
-            task_sequence = Profiles.cosign()
-        if (userprofile == 2):
-            task_sequence = Profiles.search_ticket()
-        if (userprofile == 3):
-            task_sequence = Profiles.booking()
-        if (userprofile == 4):
-            task_sequence = Profiles.login()
-        if (userprofile == 5):
-            task_sequence = Profiles.payment()
-        if (userprofile == 6):
-            task_sequence = Profiles.cancel()
-        if (userprofile == 7):
-            task_sequence = Profiles.collect()
-        if (userprofile == 8):
-            task_sequence = Profiles.adminlogin()
-        if (userprofile == 9):
-            task_sequence = Profiles.createusers()
-        if (userprofile == 10):
-            task_sequence = Profiles.getusers()
-        return task_sequence
-
-
     def adminlogin():
         task_sequence = []
         logging.debug("Admin home -> login")
         task_sequence = ["loginAdmin"]
         return task_sequence
-
+    
+    # Login as admin, check the number of users available and if lower than usersToCreate parameter then create them
     def createusers():
         task_sequence = []
         logging.debug("Admin home -> create user")
-        task_sequence = ["loginCreateUser"]
+        task_sequence = ["loginAdmin","adminGetUsers","loginCreateUser"]
         return task_sequence
 
     def getusers():
@@ -910,6 +889,30 @@ class Profiles:
             "pay_expected",
             "collect_ticket_expected",
         ]
+        return task_sequence
+
+    def callProfile(userprofile):
+        task_sequence = []
+        if (userprofile == 1):
+            task_sequence = Profiles.cosign()
+        if (userprofile == 2):
+            task_sequence = Profiles.search_ticket()
+        if (userprofile == 3):
+            task_sequence = Profiles.booking()
+        if (userprofile == 4):
+            task_sequence = Profiles.login()
+        if (userprofile == 5):
+            task_sequence = Profiles.payment()
+        if (userprofile == 6):
+            task_sequence = Profiles.cancel()
+        if (userprofile == 7):
+            task_sequence = Profiles.collect()
+        if (userprofile == 8):
+            task_sequence = Profiles.adminlogin()
+        if (userprofile == 9):
+            task_sequence = Profiles.createusers()
+        if (userprofile == 10):
+            task_sequence = Profiles.getusers()
         return task_sequence
         
 class UserActionSet1(HttpUser):
@@ -1028,6 +1031,7 @@ class UserActionSet4(HttpUser):
 
 class UserActionSet5(HttpUser):
     global max_experiment_duration
+    print(locust.env.Environment)
     weight = 1
     #Long wait time so each user will execute only one task and then wait idle to the end
     wait_time = constant(max_experiment_duration)
@@ -1116,13 +1120,12 @@ class StagesShapeWithCustomUsers(LoadTestShape):
 
     #stages = [{"duration": 100, "users": 10000, "spawn_rate": 10000, "user_classes": [UserActionSet3]}]
     #stages = [{"duration": 10, "users": 10, "spawn_rate": 10}]
-    stages = [
-        {"duration": 10, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet4]},
-        {"duration": 1000, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet5]},
-        {"duration": 1500, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet1]},]
-    stages = [
-        {"duration": 2, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet6]},
-        {"duration": 1000, "users": 10000, "spawn_rate": 100, "user_classes": [UserActionSet2]},]
+    # Create users
+    stages = [{"duration": 1, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet5]}]
+
+    #stages = [
+    #    {"duration": 2, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet6]},
+    #    {"duration": 1000, "users": 10000, "spawn_rate": 100, "user_classes": [UserActionSet2]},]
 
     def tick(self):
         global stage_duration
@@ -1165,7 +1168,7 @@ class Print:  # pylint: disable=R0902
 
     def __init__(self, env: locust.env.Environment, include_length=False, include_time=False):
         self.env = env
-        self.env.events.request_success.add_listener(self.request_success)
+        self.env.events.request.add_listener(self.request_success)
 
     def request_success(self, request_type, name, response_time, response_length, **_kwargs):
         users = self.env.runner.user_count
@@ -1189,12 +1192,34 @@ def write_statistics(environment, **kwargs):
 def on_test_start(environment, **kwargs):
     global user_count
     global stage_duration_passed
+    global usersToCreate
     # deterministic profile selection
     print("Setting seed number")
     random.seed(123)
     user_count = 0
     stage_duration_passed = 0
+    usersToCreate = environment.parsed_options.userCreate
+    
+    print("Creating "+str(usersToCreate)+" users")
+    #print(environment.host)
+    #print(dir(environment))
+    #print(dir(kwargs.values))
+    #httpuserInit = UserActionSet5(environment)
+    #httpuserInit.host = environment.host
+    #httpuserInit.perform_task()
+    #print(dir(httpuserInit))
+    #print(environment.web_ui.host)
     if not isinstance(environment.runner, MasterRunner):
         print("Beginning test setup")
     else:
         print("Started test from Master node")
+
+@events.init_command_line_parser.add_listener
+def _(parser):
+    parser.add_argument("--userCreate", type=str, env_var="USERS_CREATE", include_in_web_ui=True, default="500", help="Number of users to create")
+    # Set `include_in_web_ui` to False if you want to hide from the web UI
+    #parser.add_argument("--my-ui-invisible-argument", include_in_web_ui=False, default="I am invisible")
+    # Set `is_secret` to True if you want the text input to be password masked in the web UI
+    #parser.add_argument("--my-ui-password-argument", is_secret=True, default="I am a secret")
+
+
