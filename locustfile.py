@@ -15,12 +15,13 @@ import logging
 import locust
 import numpy as np
 from locust import events, run_single_user
+from locust.exception import StopUser
 from locust.runners import MasterRunner
 from locust import task, constant, HttpUser, User, TaskSet
 from locust import LoadTestShape
 from locust.env import Environment
 from requests.adapters import HTTPAdapter
-from test_data import USER_CREDETIALS, TRIP_DATA, TRAVEL_DATES
+from test_data import TRIP_DATA, TRAVEL_DATES
 
 locust.stats.PERCENTILES_TO_REPORT = [0.25, 0.50, 0.75, 0.80, 0.90, 0.95, 0.98, 0.99, 0.999, 0.9999, 1.0]
 VERBOSE_LOGGING = 0  # ${LOCUST_VERBOSE_LOGGING}
@@ -35,9 +36,9 @@ stage_duration = 0
 stage_duration_passed = 0
 stage_users = 0
 stage_rate = 0
-adminToken = 0;
-userList = [];
-usersToCreate = 500;
+adminToken = 0
+userList = []
+usersToCreate = 500
 
 max_experiment_duration = 86400 #in seconds. This is to guarantee users will spawn only once during the test duration
 
@@ -140,9 +141,6 @@ class Requests:
         dir_path = os.path.dirname(os.path.realpath(__file__))
         handler = logging.FileHandler(os.path.join(dir_path, "locustfile_debug.log"))
         handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
-        user = random.choice(USER_CREDETIALS)
-        self.user_name = user
-        self.password = user
         self.trip_detail = random.choice(TRIP_DATA)
         self.food_detail = {}
         self.departure_date = random.choice(TRAVEL_DATES)
@@ -233,23 +231,6 @@ class Requests:
     #         self.search_ticket(date.today().strftime(random_date_generator()), random_string_generator(), "Su Zhou",
     #                            expected)
 
-    def _create_user(self, expected):
-
-        req_label = sys._getframe().f_code.co_name + postfix(expected)
-        start_time = time.time()
-        document_num = random.randint(1, 5)  # added by me
-        with self.client.post(url="/api/v1/adminuserservice/users",
-                              headers={
-                                  "Authorization": self.bearer, "Accept": "application/json",
-                                  "Content-Type": "application/json"},
-                              json={"documentNum": document_num, "documentType": 0, "email": "string", "gender": 0,
-                                    "password": self.user_name, "userName": self.user_name},
-                              name=req_label) as response2:
-            to_log = {'name': req_label, 'expected': expected, 'status_code': response2.status_code,
-                      'response_time': time.time() - start_time,
-                      'response': self.try_to_read_response_as_json(response2)}
-            self.log_verbose(to_log)
-
     def _navigate_to_client_login(self, expected=True):
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
@@ -289,10 +270,14 @@ class Requests:
             return response_as_json, response_as_json["status"]
 
         for i in range(0,usersToCreate):
-            user_name = str(uuid.uuid4())
+            user_name = str(uuid.UUID(int=random.getrandbits(128), version=4))
+            if user_name in userList:
+                print(str(i+1)+". User "+user_name+" already created")
+                continue
+                
             password = "12345678"
             start_time = time.time()
-            print(i+". Creating user "+user_name)
+            print(str(i+1)+". Creating user "+user_name)
             response_as_json = try_until_success(api_call_admin_create_user)
             if response_as_json is not None:
                 userList.append(user_name)
@@ -365,58 +350,6 @@ class Requests:
         #try_until_success(api_call_create_contact_for_user)
 
         #return user_id, token
-
-    def loginOld(self, expected):
-        # self._create_user(True)
-        # self._navigate_to_client_login()
-        req_label = sys._getframe().f_code.co_name + postfix(expected)
-        start_time = time.time()
-        head = {"Accept": "application/json",
-                "Content-Type": "application/json"}
-        response_as_json = None
-
-        if (expected):
-            with self.client.post(url="/api/v1/users/login",
-                                        headers=head,
-                                        json={
-                                            "username": self.user_name,
-                                            "password": self.password
-                                        }, name=req_label, catch_response=True) as response:
-                if response.elapsed.total_seconds() > 26.0:
-                    #print("Login fail response: " + str(response.elapsed.total_seconds()))
-                    response.failure("Time out on login. Dropped query.")
-                    to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
-                        'response_time': time.time() - start_time}
-                    self.log_verbose(to_log)
-                    return
-                else:
-                    #print("Login response: " + str(response.elapsed.total_seconds()))
-                    to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
-                            'response_time': time.time() - start_time,
-                            'response': self.try_to_read_response_as_json(response)}
-                    self.log_verbose(to_log)
-                    response_as_json = response.json()["data"]
-        else:
-            response = self.client.post(url="/api/v1/users/login",
-                                        headers=head,
-                                        json={
-                                            "username": self.user_name,
-                                            # wrong password
-                                            "password": random_string_generator()
-                                        }, name=req_label)
-            to_log = {'name': req_label, 'expected': expected, 'status_code': response.status_code,
-                      'response_time': time.time() - start_time,
-                      'response': self.try_to_read_response_as_json(response)}
-            self.log_verbose(to_log)
-            response_as_json = response.json()["data"]
-
-        if response_as_json is not None:
-            token = response_as_json["token"]
-            self.bearer = "Bearer " + token
-            self.user_id = response_as_json["userId"]
-            print("Login success with token: " + str(token))
-
-    # purchase ticket
 
     def start_booking(self, expected):
         departure_date = self.departure_date
@@ -1061,7 +994,7 @@ class UserActionSet5(HttpUser):
 class InitCreateUsers(HttpUser):
     global max_experiment_duration
     #print(locust.env.Environment)
-    host = "http://"+os.environ["LOCUST_HOST"]+":32677"
+    host = os.environ["LOCUST_HOST"]
     print("InitCreateUsers host:"+host)
     weight = 1
     #Long wait time so each user will execute only one task and then wait idle to the end
@@ -1085,7 +1018,8 @@ class InitCreateUsers(HttpUser):
         request = Requests(self.client)
         for tasks in task_sequence:
             request.perform_task(tasks)
-
+        raise StopUser()
+    
 # Class that does nothing to allow users to slow down and complete the work
 class UserSlowdown(HttpUser):
     weight = 1
@@ -1121,7 +1055,7 @@ class StagesShapeWithCustomUsers(LoadTestShape):
     #stages = [{"duration": 100, "users": 10000, "spawn_rate": 10000, "user_classes": [UserActionSet3]}]
     #stages = [{"duration": 10, "users": 10, "spawn_rate": 10}]
     # Create users
-    stages = [{"duration": 1, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet5]}]
+    stages = [{"duration": 30, "users": 100, "spawn_rate": 100, "user_classes": [UserActionSet2]}]
 
     #stages = [
     #    {"duration": 2, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet6]},
@@ -1176,9 +1110,9 @@ class Print:  # pylint: disable=R0902
         state_data.append(data)
 
 
-@events.init.add_listener
-def locust_init_listener(environment, **kwargs):
-    Print(env=environment)
+#@events.init.add_listener
+#def locust_init_listener(environment, **kwargs):
+    #Print(env=environment)
 
 
 @events.quitting.add_listener
@@ -1196,9 +1130,10 @@ def on_test_start(environment, **kwargs):
     # deterministic profile selection
     print("Setting seed number")
     random.seed(123)
+
     user_count = 0
     stage_duration_passed = 0
-    usersToCreate = environment.parsed_options.userCreate
+    usersToCreate = int(environment.parsed_options.userCreate)
     
     #print(environment.host)
     #print(dir(environment))
@@ -1222,4 +1157,5 @@ def _(parser):
     #parser.add_argument("--my-ui-password-argument", is_secret=True, default="I am a secret")
 
 print("Creating "+str(usersToCreate)+" users")
-run_single_user(InitCreateUsers)
+run_single_user(InitCreateUsers,include_length=1)
+print("Initialization completed")
