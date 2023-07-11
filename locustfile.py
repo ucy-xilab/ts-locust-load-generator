@@ -14,7 +14,7 @@ import logging
 
 import locust
 import numpy as np
-from locust import events
+from locust import events, run_single_user
 from locust.runners import MasterRunner
 from locust import task, constant, HttpUser, User, TaskSet
 from locust import LoadTestShape
@@ -268,6 +268,7 @@ class Requests:
             body = {"username": "admin", "password": "222222"}
             response = self.client.post(url="/api/v1/users/login", headers=headers, json=body, name=get_name_suffix("admin_login"))
             response_as_json = get_json_from_response(response)
+            print(response_as_json)
             return response_as_json, response_as_json["status"]
 
         print("Login as admin")
@@ -1031,35 +1032,6 @@ class UserActionSet4(HttpUser):
 
 class UserActionSet5(HttpUser):
     global max_experiment_duration
-    print(locust.env.Environment)
-    weight = 1
-    #Long wait time so each user will execute only one task and then wait idle to the end
-    wait_time = constant(max_experiment_duration)
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
-        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
-
-    @task()
-    def perform_task(self):
-        global user_count
-        global stage_duration
-        global stage_duration_passed
-        global stage_users
-        global stage_rate
-        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
-        user_count += 1
-        userprofile = random.randint(9, 9)
-        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
-        time.sleep(sleep_time)
-        task_sequence = Profiles.callProfile(userprofile)
-        request = Requests(self.client)
-        for tasks in task_sequence:
-            request.perform_task(tasks)
-
-class UserActionSet6(HttpUser):
-    global max_experiment_duration
     weight = 1
     #Long wait time so each user will execute only one task and then wait idle to the end
     wait_time = constant(max_experiment_duration)
@@ -1081,6 +1053,34 @@ class UserActionSet6(HttpUser):
         userprofile = random.randint(10, 10)
         print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
         time.sleep(sleep_time)
+        task_sequence = Profiles.callProfile(userprofile)
+        request = Requests(self.client)
+        for tasks in task_sequence:
+            request.perform_task(tasks)
+
+class InitCreateUsers(HttpUser):
+    global max_experiment_duration
+    #print(locust.env.Environment)
+    host = "http://"+os.environ["LOCUST_HOST"]+":32677"
+    print("InitCreateUsers host:"+host)
+    weight = 1
+    #Long wait time so each user will execute only one task and then wait idle to the end
+    wait_time = constant(max_experiment_duration)
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.client.mount("https://", HTTPAdapter(pool_maxsize=50))
+        self.client.mount("http://", HTTPAdapter(pool_maxsize=50))
+
+    @task()
+    def perform_task(self):
+        global user_count
+        global stage_duration
+        global stage_duration_passed
+        global stage_users
+        global stage_rate
+        userprofile = 9
+        print("Admin user creation starts now!")
         task_sequence = Profiles.callProfile(userprofile)
         request = Requests(self.client)
         for tasks in task_sequence:
@@ -1200,7 +1200,6 @@ def on_test_start(environment, **kwargs):
     stage_duration_passed = 0
     usersToCreate = environment.parsed_options.userCreate
     
-    print("Creating "+str(usersToCreate)+" users")
     #print(environment.host)
     #print(dir(environment))
     #print(dir(kwargs.values))
@@ -1222,4 +1221,5 @@ def _(parser):
     # Set `is_secret` to True if you want the text input to be password masked in the web UI
     #parser.add_argument("--my-ui-password-argument", is_secret=True, default="I am a secret")
 
-
+print("Creating "+str(usersToCreate)+" users")
+run_single_user(InitCreateUsers)
