@@ -1048,14 +1048,14 @@ class StagesShapeWithCustomUsers(LoadTestShape):
     #    {"duration": 180, "users": 20, "spawn_rate": 20, "user_classes": [UserActionSet1]},
     #    ]
 
-    stages = [
-        {"duration": 10, "users": 50, "spawn_rate": 50, "user_classes": [UserActionSet1]},
-        {"duration": 30, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet2]},]
+    #stages = [
+    #    {"duration": 10, "users": 50, "spawn_rate": 50, "user_classes": [UserActionSet1]},
+    #    {"duration": 30, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet2]},]
 
     #stages = [{"duration": 100, "users": 10000, "spawn_rate": 10000, "user_classes": [UserActionSet3]}]
     #stages = [{"duration": 10, "users": 10, "spawn_rate": 10}]
     # Create users
-    stages = [{"duration": 30, "users": 100, "spawn_rate": 100, "user_classes": [UserActionSet2]}]
+    stages = [{"duration": 30, "users": 1000, "spawn_rate": 1000, "user_classes": [UserActionSet2]}]
 
     #stages = [
     #    {"duration": 2, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet6]},
