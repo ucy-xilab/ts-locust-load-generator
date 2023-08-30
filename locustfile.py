@@ -29,7 +29,6 @@ VERBOSE_LOGGING = 0  # ${LOCUST_VERBOSE_LOGGING}
 LOG_STATISTICS_IN_HALF_MINUTE_CHUNKS = False
 RETRY_ON_ERROR = True
 MAX_RETRIES = 2
-QUERY_DROPPED_TIME = 0 #If greater than 0 then if query response is bigger than QUERY_DROPPED_TIME in seconds is considered as dropped query
 
 state_data = []
 user_count = 0
@@ -167,7 +166,7 @@ class Requests:
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
         with self.client.get('/index.html', name=req_label, catch_response=True) as response:
-            if (not QUERY_DROPPED_TIME) and response.elapsed.total_seconds() > QUERY_DROPPED_TIME:
+            if response.elapsed.total_seconds() > 0.1:
                 #print("Home load fail response: " + str(response.elapsed.total_seconds()))
                 response.failure("Time out on loading. Dropped query.")
                 to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
@@ -850,6 +849,44 @@ class Profiles:
             task_sequence = Profiles.getusers()
         return task_sequence
         
+def calculate_exponential():
+    global stage_duration
+    global stage_duration_passed
+    global stage_users
+    n=stage_users
+    stage_time = (stage_duration-stage_duration_passed)
+    sleep_time = ((random.expovariate(1) * n) % stage_time) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second)
+    return sleep_time
+
+# Expovariate emulates a poisson process and by calculating the mu = events per time unit to have an average of n=stage_user events arrivving at the total of the stage_tine we achieve a poisson distributiob
+def calculate_poisson():
+    global stage_duration
+    global stage_duration_passed
+    global stage_users
+    n=stage_users
+    stage_time = (stage_duration-stage_duration_passed)
+    mu=n/stage_time
+    sleep_time = ((random.expovariate(mu) * n) % stage_time) 
+    return sleep_time
+
+# More complicated, not confirm poisson function to produce arrival times. Should not be used if not confirmed
+def calculate_poisson_2():
+    global stage_duration
+    global stage_duration_passed
+    global stage_users
+    #generate n events with a mu of n over stage time events per second
+    #n is the number of events to generate.
+    n=stage_users
+    stage_time = (stage_duration-stage_duration_passed)
+    mu=n/stage_time
+    #time span is n/mu
+    time_span=n/mu
+    sleep_time = (random.random()*time_span)
+    return sleep_time
+
+def next_arrival():
+    return calculate_poisson()
+
 class UserActionSet1(HttpUser):
     global max_experiment_duration
     weight = 1
@@ -865,14 +902,12 @@ class UserActionSet1(HttpUser):
     def perform_task(self):
         bearer = 0
         global user_count
-        global stage_duration
-        global stage_duration_passed
-        global stage_users
         global stage_rate
-        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        sleep_time = next_arrival()
         user_count += 1
+        current_user = user_count
         userprofile = random.randint(2, 2)
-        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        print("User "+str(current_user)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
         time.sleep(sleep_time)
         task_sequence = Profiles.callProfile(userprofile)
         request = Requests(self.client)
@@ -893,19 +928,17 @@ class UserActionSet2(HttpUser):
     @task()
     def perform_task(self):
         global user_count
-        global stage_duration
-        global stage_duration_passed
-        global stage_users
         global stage_rate
-        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        sleep_time = next_arrival()
         user_count += 1
+        current_user = user_count
         userprofile = random.randint(2, 7)
-        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        print("User "+str(current_user)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
         time.sleep(sleep_time)
         task_sequence = Profiles.callProfile(userprofile)
         request = Requests(self.client)
         for tasks in task_sequence:
-            print("User "+str(user_count)+" with profile "+str(userprofile)+" executing task "+str(tasks))
+            print("User "+str(current_user)+" with profile "+str(userprofile)+" executing task "+str(tasks))
             request.perform_task(tasks)
 
 class UserActionSet3(HttpUser):
@@ -922,14 +955,12 @@ class UserActionSet3(HttpUser):
     @task()
     def perform_task(self):
         global user_count
-        global stage_duration
-        global stage_duration_passed
-        global stage_users
         global stage_rate
-        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        sleep_time = next_arrival()
         user_count += 1
+        current_user = user_count
         userprofile = random.randint(1, 1)
-        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        print("User "+str(current_user)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
         time.sleep(sleep_time)
         task_sequence = Profiles.callProfile(userprofile)
         request = Requests(self.client)
@@ -950,14 +981,12 @@ class UserActionSet4(HttpUser):
     @task()
     def perform_task(self):
         global user_count
-        global stage_duration
-        global stage_duration_passed
-        global stage_users
         global stage_rate
-        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        sleep_time = next_arrival()
         user_count += 1
+        current_user = user_count
         userprofile = random.randint(8, 8)
-        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        print("User "+str(current_user)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
         time.sleep(sleep_time)
         task_sequence = Profiles.callProfile(userprofile)
         request = Requests(self.client)
@@ -978,14 +1007,12 @@ class UserActionSet5(HttpUser):
     @task()
     def perform_task(self):
         global user_count
-        global stage_duration
-        global stage_duration_passed
-        global stage_users
         global stage_rate
-        sleep_time = ((random.expovariate(1) * stage_users) % (stage_duration-stage_duration_passed)) #expovariate defines the average rate of user arrivals per second, for example expovariate(1) will result to an average user arrival of 1 user per second) 
+        sleep_time = next_arrival()
         user_count += 1
+        current_user = user_count
         userprofile = random.randint(10, 10)
-        print("User "+str(user_count)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
+        print("User "+str(current_user)+" with profile "+str(userprofile)+" will start at tick "+str(sleep_time))
         time.sleep(sleep_time)
         task_sequence = Profiles.callProfile(userprofile)
         request = Requests(self.client)
@@ -1009,9 +1036,6 @@ class InitCreateUsers(HttpUser):
     @task()
     def perform_task(self):
         global user_count
-        global stage_duration
-        global stage_duration_passed
-        global stage_users
         global stage_rate
         userprofile = 9
         print("Admin user creation starts now!")
