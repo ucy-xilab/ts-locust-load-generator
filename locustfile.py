@@ -167,7 +167,7 @@ class Requests:
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
         with self.client.get('/index.html', name=req_label, catch_response=True) as response:
-            if (not DROPQUERY_TIMEOUT) and response.elapsed.total_seconds() > DROPQUERY_TIMEOUT:
+            if DROPQUERY_TIMEOUT and response.elapsed.total_seconds() > DROPQUERY_TIMEOUT:
                 #print("Home load fail response: " + str(response.elapsed.total_seconds()))
                 response.failure("Time out on loading. Dropped query.")
                 to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
