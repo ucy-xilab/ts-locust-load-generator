@@ -8,7 +8,9 @@ to create 1000 users. The default db users is 500 if it's not defined in the com
 - It implements the Poisson distribution of X user arrival times within a given time T. The rate of the poisson distribution is dynamically calculated as X/T.
 - It allows to have multiple stages of the execution. This can be achieved by editing the "StagesShapeWithCustomUsers" and adding more stages. Examples in the source code demostrate how this can be done.
 - It allows to set a drop query timeout time. This means that if a query takes longer than DROPQUERY_TIMEOUT for the response it will be considered as failed. If DROPQUERY_TIMEOUT is set to 0 then this feature is disabled. An example of this feature is demonstrated on the home function.
-  
+
+## Please note that when running through the WebUI on the first time you need to change the ShapeClass option from the dropdown to "StagesShapeWithCustomUsers" in order to execute the stages class
+
 ## WARNING: Login via SSH on the node, in our case is Node 1, the master, of the cluster that it's taint has been set so no trainticket service pods can be migrated to!!!
 
 ## Clone repository
