@@ -29,6 +29,7 @@ VERBOSE_LOGGING = 0  # ${LOCUST_VERBOSE_LOGGING}
 LOG_STATISTICS_IN_HALF_MINUTE_CHUNKS = False
 RETRY_ON_ERROR = True
 MAX_RETRIES = 2
+DROPQUERY_TIMEOUT = 0
 
 state_data = []
 user_count = 0
@@ -166,7 +167,7 @@ class Requests:
         req_label = sys._getframe().f_code.co_name + postfix(expected)
         start_time = time.time()
         with self.client.get('/index.html', name=req_label, catch_response=True) as response:
-            if response.elapsed.total_seconds() > 0.1:
+            if (not DROPQUERY_TIMEOUT) and response.elapsed.total_seconds() > DROPQUERY_TIMEOUT:
                 #print("Home load fail response: " + str(response.elapsed.total_seconds()))
                 response.failure("Time out on loading. Dropped query.")
                 to_log = {'name': req_label, 'expected': 'time_out', 'status_code': response.status_code,
