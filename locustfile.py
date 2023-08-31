@@ -1060,8 +1060,10 @@ class UserSlowdown(HttpUser):
     def perform_task(self):
         pass
 
+# Function that allows multiple stages. Note that the duration is incremental meaning the next stage should be the duration of the previous + the time of the execution
 class StagesShapeWithCustomUsers(LoadTestShape):
 
+    # Example of multiple stages with all stages using the same profile but different users and spawn rate. 
     #stages = [
     #    {"duration": 20, "users": 10, "spawn_rate": 100, "user_classes": [UserActionSet1]},
     #    {"duration": 40, "users": 50, "spawn_rate": 50, "user_classes": [UserActionSet1]},
@@ -1073,18 +1075,20 @@ class StagesShapeWithCustomUsers(LoadTestShape):
     #    {"duration": 180, "users": 20, "spawn_rate": 20, "user_classes": [UserActionSet1]},
     #    ]
 
+    # Examples of two stages executing for 10 and 20 seconds, total of 30 sections with different execution profiles
     #stages = [
     #    {"duration": 10, "users": 50, "spawn_rate": 50, "user_classes": [UserActionSet1]},
     #    {"duration": 30, "users": 500, "spawn_rate": 500, "user_classes": [UserActionSet2]},]
 
     #stages = [{"duration": 100, "users": 10000, "spawn_rate": 10000, "user_classes": [UserActionSet3]}]
     #stages = [{"duration": 10, "users": 10, "spawn_rate": 10}]
-    # Create users
-    stages = [{"duration": 30, "users": 1000, "spawn_rate": 1000, "user_classes": [UserActionSet2]}]
 
     #stages = [
     #    {"duration": 2, "users": 1, "spawn_rate": 1, "user_classes": [UserActionSet6]},
     #    {"duration": 1000, "users": 10000, "spawn_rate": 100, "user_classes": [UserActionSet2]},]
+
+    # Stage that executes a common profile of users search and booking tickets
+    stages = [{"duration": 30, "users": 1000, "spawn_rate": 1000, "user_classes": [UserActionSet2]}]
 
     def tick(self):
         global stage_duration
